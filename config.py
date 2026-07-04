@@ -62,14 +62,27 @@ _DEFAULT_SANDBOX_NETWORK = "install-only"
 # confirmation before proceeding (Master Document 7.3/7.6, Epic E2). Like
 # _DEFAULT_SENSITIVE_PATHS, these are a floor, not a ceiling -- see
 # SolvixConfig.__post_init__.
+#
+# The SQL patterns (DROP TABLE/DATABASE, TRUNCATE) require a target
+# identifier immediately followed by whatever ends a SQL statement in
+# practice -- a quote, semicolon, newline, or end of string -- rather than a
+# bare keyword match. This is what lets `TRUNCATE orders` inside a real
+# `cursor.execute('TRUNCATE orders')` still fire, while `def truncate(text,
+# length):`, a `truncate_string` identifier, or the word "truncate" in a
+# comment/docstring do not (SLX-E4: those bare-word matches were the
+# repeated false positive against sample_repo's own utils/strings.py). The
+# optional `IF [NOT] EXISTS` clause is skipped over so the common defensive
+# `DROP TABLE IF EXISTS <name>` migration idiom still matches.
+_IF_EXISTS = r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
+_SQL_TARGET = r"[A-Za-z_][A-Za-z0-9_]*\b\s*(?=[;'\"\n]|$)"
 _DEFAULT_DANGEROUS_OPS: tuple[str, ...] = (
     r"git\s+push\b[^\n]*(--force\b|-f\b)",
     r"git\s+reset\s+--hard\b",
     r"git\s+branch\s+.*-D\b",
     r"git\s+push\b[^\n]*--delete\b",
-    r"\bDROP\s+TABLE\b",
-    r"\bDROP\s+DATABASE\b",
-    r"\bTRUNCATE\b",
+    r"\bDROP\s+TABLE\s+" + _IF_EXISTS + _SQL_TARGET,
+    r"\bDROP\s+DATABASE\s+" + _IF_EXISTS + _SQL_TARGET,
+    r"\bTRUNCATE\s+(?:TABLE\s+)?" + _IF_EXISTS + _SQL_TARGET,
 )
 
 

@@ -10,6 +10,12 @@ the Editor already uses to validate diffs, and runs the project's test
 command inside a network-isolated Docker sandbox (execution.sandbox)
 against that disposable copy -- so a bad diff or a flaky/destructive test
 can never touch the real repo or the host machine.
+
+copy_repo and apply_diff are exposed publicly (not just used internally by
+run_tests_on_diff) so execution.orchestrator.run_task can reuse the exact
+same copy/patch mechanics for its own task-scoped working copy (Epic C2):
+a later step's diff needs to be verified against everything earlier steps
+in the same task already changed, not just the original on-disk repo.
 """
 
 from __future__ import annotations
@@ -38,12 +44,31 @@ class TestResult:
     exit_code: int
 
 
-def _apply_diff_in_scratch(scratch_root: Path, diff: Diff) -> None:
-    target_path = scratch_root / diff.target_file
+def copy_repo(repo_path: str | Path, dest: str | Path) -> None:
+    """Copy repo_path to dest, skipping the same VCS/cache/venv clutter a
+    real repo accumulates (Master Document Epic C2/E3) -- shared by
+    run_tests_on_diff's own per-call scratch copy and by
+    execution.orchestrator.run_task's task-scoped working copy, which needs
+    the exact same ignore list to avoid a subtly different scratch tree
+    between the two.
+    """
+    shutil.copytree(repo_path, dest, ignore=_IGNORED_DIRS)
+
+
+def apply_diff(root: Path, diff: Diff) -> None:
+    """Apply diff to root in place via the same `patch` mechanism the
+    Editor uses to validate a diff before this ever runs. Used both for a
+    single call's disposable scratch copy (run_tests_on_diff) and for
+    execution.orchestrator.run_task's task-scoped working copy, which
+    persists a step's diff across the rest of that task's steps (Epic C2)
+    -- the same function either way, since applying a diff has no notion of
+    "scratch" or "persistent", only a target directory.
+    """
+    target_path = root / diff.target_file
     if diff.is_new_file:
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    diff_path = scratch_root / ".solvix_scratch.diff"
+    diff_path = root / ".solvix_scratch.diff"
     diff_path.write_text(diff.diff_text)
     try:
         subprocess.run(
@@ -85,6 +110,6 @@ def run_tests_on_diff(
     """
     with tempfile.TemporaryDirectory() as tmp_dir:
         scratch_root = Path(tmp_dir) / "repo"
-        shutil.copytree(repo_path, scratch_root, ignore=_IGNORED_DIRS)
-        _apply_diff_in_scratch(scratch_root, diff)
+        copy_repo(repo_path, scratch_root)
+        apply_diff(scratch_root, diff)
         return run_tests(scratch_root, test_command=test_command)

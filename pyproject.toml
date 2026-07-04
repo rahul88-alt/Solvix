@@ -25,4 +25,4 @@ solvix = "cli:main"
 py-modules = ["cli", "config"]
 
 [tool.setuptools.packages.find]
-include = ["context*", "execution*", "indexer*", "reasoning*"]
+include = ["context*", "execution*", "indexer*", "memory*", "reasoning*", "review*"]

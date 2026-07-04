@@ -77,6 +77,62 @@ def unique_branch_name(repo_root: str | Path, base_name: str) -> str:
     raise PatchApplyError(f"could not find a unique branch name derived from {base_name!r}")
 
 
+def _apply_diff_and_commit(repo_root: str | Path, diff: str, commit_message: str) -> None:
+    """Apply diff to the working tree of whatever branch is currently
+    checked out and commit it there. Shared by apply_to_new_branch (which
+    owns creating/switching to the branch first) and commit_to_current_branch
+    (which assumes the caller already checked out the target branch).
+    """
+    diff_path = Path(repo_root) / ".solvix_patch.diff"
+    diff_path.write_text(diff)
+    try:
+        apply_result = subprocess.run(
+            ["git", "apply", str(diff_path)],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        if apply_result.returncode != 0:
+            # git apply requires exact hunk context and rejects the whole
+            # diff on any mismatch. reasoning.editor already confirmed this
+            # exact diff text applies, using the more tolerant `patch
+            # --forward` (reasoning.editor._validate_applies_cleanly, run
+            # against every proposed diff during step verification) --
+            # local models routinely drop a blank context line without
+            # otherwise changing the diff's meaning, which `patch` accepts
+            # (as a fuzzy match) and `git apply` does not. Falling back to
+            # the same tool/tolerance here means a diff the pipeline already
+            # accepted doesn't get re-rejected at the last step for a
+            # mismatch that was never a real content conflict.
+            patch_result = subprocess.run(
+                [
+                    "patch", "-p1", "--forward", "--no-backup-if-mismatch",
+                    "-d", str(repo_root), "-i", str(diff_path),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if patch_result.returncode != 0:
+                raise PatchApplyError(
+                    f"git apply failed: {apply_result.stderr.strip()}; "
+                    f"patch fallback also failed: {(patch_result.stdout + patch_result.stderr).strip()}"
+                )
+    finally:
+        diff_path.unlink(missing_ok=True)
+
+    touched = _touched_files(diff)
+    if not touched:
+        raise PatchApplyError("could not determine which file(s) the diff touches")
+    # Scoping both the add and the commit itself to `touched` (rather
+    # than `git add -A` / a pathspec-less `git commit`, which commits
+    # the whole index) means any other content already staged or
+    # modified in the working tree before this ran -- a repo with other
+    # in-progress work -- is left exactly as it was, staged but
+    # uncommitted, never swept into this commit.
+    _git(repo_root, "add", "--", *touched)
+    _git(repo_root, "commit", "-m", commit_message, "--", *touched)
+
+
 def apply_to_new_branch(
     repo_root: str | Path, diff: str, branch_name: str, commit_message: str
 ) -> str:
@@ -101,32 +157,7 @@ def apply_to_new_branch(
 
     _git(repo_root, "checkout", "-b", final_branch)
     try:
-        diff_path = Path(repo_root) / ".solvix_patch.diff"
-        diff_path.write_text(diff)
-        try:
-            apply_result = subprocess.run(
-                ["git", "apply", str(diff_path)],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-            )
-        finally:
-            diff_path.unlink(missing_ok=True)
-
-        if apply_result.returncode != 0:
-            raise PatchApplyError(f"git apply failed: {apply_result.stderr.strip()}")
-
-        touched = _touched_files(diff)
-        if not touched:
-            raise PatchApplyError("could not determine which file(s) the diff touches")
-        # Scoping both the add and the commit itself to `touched` (rather
-        # than `git add -A` / a pathspec-less `git commit`, which commits
-        # the whole index) means any other content already staged or
-        # modified in the working tree before this ran -- a repo with other
-        # in-progress work -- is left exactly as it was, staged but
-        # uncommitted, never swept into this commit.
-        _git(repo_root, "add", "--", *touched)
-        _git(repo_root, "commit", "-m", commit_message, "--", *touched)
+        _apply_diff_and_commit(repo_root, diff, commit_message)
     except Exception:
         _git(repo_root, "checkout", original_branch, check=False)
         _git(repo_root, "branch", "-D", final_branch, check=False)
@@ -134,3 +165,41 @@ def apply_to_new_branch(
 
     _git(repo_root, "checkout", original_branch)
     return final_branch
+
+
+def checkout_branch(repo_root: str | Path, branch_name: str, check: bool = True) -> None:
+    """Check out an already-existing local branch. Used by cli.revise
+    (Epic D3) to restore the user's original branch once a revision attempt
+    finishes, success or failure -- check=False there so a restore failure
+    never masks whatever real error is already propagating.
+    """
+    _git(repo_root, "checkout", branch_name, check=check)
+
+
+def checkout_existing_branch(repo_root: str | Path, branch_name: str) -> None:
+    """Fetch and check out a branch that already exists on origin -- a PR's
+    branch (Epic D3) -- rather than creating a new one like
+    apply_to_new_branch does. `checkout -B` resets the local branch (if any)
+    to exactly match origin's tip, so a stale local copy from a previous
+    revision round never causes a diff to be based on outdated content.
+
+    Unlike apply_to_new_branch, this never switches back to any prior
+    branch itself -- cli.revise owns capturing the original branch and
+    restoring it (via checkout_branch) once the whole revision attempt
+    finishes.
+    """
+    _git(repo_root, "fetch", "origin", branch_name)
+    _git(repo_root, "checkout", "-B", branch_name, f"origin/{branch_name}")
+
+
+def commit_to_current_branch(repo_root: str | Path, diff: str, commit_message: str) -> None:
+    """Apply diff and commit it on whatever branch is currently checked out
+    (Epic D3), without creating or switching branches -- used for revising
+    an existing PR's branch (already checked out via checkout_existing_branch)
+    where the revision must land as an additional commit on the same
+    branch, not a new one.
+    """
+    current_branch = get_current_branch(repo_root)
+    if current_branch in _PROTECTED_BRANCHES:
+        raise PatchApplyError(f"refusing to commit directly to a protected branch: {current_branch!r}")
+    _apply_diff_and_commit(repo_root, diff, commit_message)

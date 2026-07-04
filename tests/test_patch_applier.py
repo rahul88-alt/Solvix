@@ -6,6 +6,9 @@ import pytest
 from execution.patch_applier import (
     PatchApplyError,
     apply_to_new_branch,
+    checkout_branch,
+    checkout_existing_branch,
+    commit_to_current_branch,
     slugify_task,
     unique_branch_name,
 )
@@ -107,6 +110,74 @@ def test_apply_to_new_branch_never_commits_unrelated_staged_wip(tmp_path):
     assert (tmp_path / "unrelated.py").read_text() == "someone's unfinished work\n"
 
 
+def test_apply_to_new_branch_falls_back_to_patch_when_git_apply_rejects_a_valid_diff(tmp_path):
+    """A diff missing one blank context line (a real local-model quirk --
+    see reasoning.editor._validate_applies_cleanly's docstring) is rejected
+    outright by strict `git apply` but still applies via the same lenient
+    `patch --forward` that already validated it during step verification.
+    Real git repo, no git-apply mocking, so this exercises the actual
+    fallback subprocess call.
+    """
+    _run_git(tmp_path, "init", "-q")
+    _run_git(tmp_path, "config", "user.email", "test@example.com")
+    _run_git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "strings.py").write_text(
+        "def slugify(text):\n    return text.lower()\n\n\ndef truncate(text):\n    return text[:80]\n"
+    )
+    _run_git(tmp_path, "add", "-A")
+    _run_git(tmp_path, "commit", "-q", "-m", "initial")
+
+    # Only one blank context line before `def truncate`, though the real
+    # file has two -- git apply requires an exact match and rejects this;
+    # patch --forward accepts it as a fuzzy match.
+    diff = (
+        "--- a/strings.py\n"
+        "+++ b/strings.py\n"
+        "@@ -1,5 +1,8 @@\n"
+        " def slugify(text):\n"
+        "     return text.lower()\n"
+        " \n"
+        "+def is_blank(text):\n"
+        "+    return not text.strip()\n"
+        "+\n"
+        " def truncate(text):\n"
+        "     return text[:80]\n"
+    )
+
+    final_branch = apply_to_new_branch(tmp_path, diff, "solvix/my-task", "solvix: my task")
+
+    assert final_branch == "solvix/my-task"
+    committed = _run_git(tmp_path, "show", "solvix/my-task:strings.py")
+    assert "def is_blank(text):" in committed
+    # the patch fallback must not leave a strings.py.orig backup file
+    # sitting in the working tree as untracked cruft
+    assert not (tmp_path / "strings.py.orig").exists()
+
+
+def test_apply_to_new_branch_raises_when_both_git_apply_and_patch_fail(tmp_path):
+    calls = []
+
+    def fake_subprocess_run(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["git", "-C", str(tmp_path)] and args[3:5] == ["rev-parse", "--abbrev-ref"]:
+            return _completed(0, stdout="feature/original\n")
+        if "rev-parse" in args and "--verify" in args:
+            return _completed(1)
+        if args[0] == "git" and args[1] == "apply":
+            return _completed(1, stderr="patch does not apply")
+        if args[0] == "patch":
+            return _completed(1, stderr="patch: **** malformed patch")
+        return _completed(0)
+
+    with patch("execution.patch_applier.subprocess.run", side_effect=fake_subprocess_run):
+        with pytest.raises(PatchApplyError):
+            apply_to_new_branch(tmp_path, "bad diff", "solvix/my-task", "msg")
+
+    call_args = [c[3:] for c in calls if c[:3] == ["git", "-C", str(tmp_path)]]
+    assert ["checkout", "feature/original"] in call_args
+    assert ["branch", "-D", "solvix/my-task"] in call_args
+
+
 def test_apply_to_new_branch_refuses_protected_branch_name(tmp_path):
     with patch("execution.patch_applier.subprocess.run", return_value=_completed(0, stdout="main\n")):
         with pytest.raises(PatchApplyError):
@@ -160,6 +231,70 @@ def test_apply_to_new_branch_restores_original_branch_on_commit_failure(tmp_path
     call_args = [c[3:] for c in calls if c[:3] == ["git", "-C", str(tmp_path)]]
     assert ["checkout", "feature/original"] in call_args
     assert ["branch", "-D", "solvix/my-task"] in call_args
+
+
+def test_checkout_existing_branch_fetches_then_checks_out_from_origin(tmp_path):
+    calls = []
+
+    def fake_subprocess_run(args, **kwargs):
+        calls.append(args)
+        return _completed(0)
+
+    with patch("execution.patch_applier.subprocess.run", side_effect=fake_subprocess_run):
+        checkout_existing_branch(tmp_path, "solvix/my-task")
+
+    call_args = [c[3:] for c in calls if c[:3] == ["git", "-C", str(tmp_path)]]
+    assert ["fetch", "origin", "solvix/my-task"] in call_args
+    assert ["checkout", "-B", "solvix/my-task", "origin/solvix/my-task"] in call_args
+
+
+def test_checkout_existing_branch_raises_when_fetch_fails(tmp_path):
+    with patch("execution.patch_applier.subprocess.run", return_value=_completed(1, stderr="not found")):
+        with pytest.raises(PatchApplyError):
+            checkout_existing_branch(tmp_path, "solvix/my-task")
+
+
+def test_checkout_branch_does_not_raise_when_check_false(tmp_path):
+    with patch("execution.patch_applier.subprocess.run", return_value=_completed(1, stderr="boom")):
+        checkout_branch(tmp_path, "main", check=False)  # must not raise
+
+
+def test_checkout_branch_raises_by_default(tmp_path):
+    with patch("execution.patch_applier.subprocess.run", return_value=_completed(1, stderr="boom")):
+        with pytest.raises(PatchApplyError):
+            checkout_branch(tmp_path, "main")
+
+
+def test_commit_to_current_branch_applies_and_commits_without_switching(tmp_path):
+    calls = []
+
+    def fake_subprocess_run(args, **kwargs):
+        calls.append(args)
+        if args[:3] == ["git", "-C", str(tmp_path)] and args[3:5] == ["rev-parse", "--abbrev-ref"]:
+            return _completed(0, stdout="solvix/my-task\n")
+        if args[0] == "git" and args[1] == "apply":
+            return _completed(0)
+        return _completed(0)
+
+    fake_diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+
+    with patch("execution.patch_applier.subprocess.run", side_effect=fake_subprocess_run):
+        commit_to_current_branch(tmp_path, fake_diff, "solvix: revise PR #7")
+
+    call_args = [c[3:] for c in calls if c[:3] == ["git", "-C", str(tmp_path)]]
+    assert ["add", "--", "x"] in call_args
+    assert ["commit", "-m", "solvix: revise PR #7", "--", "x"] in call_args
+    # never switches branches itself
+    assert not any(c and c[0] == "checkout" for c in call_args)
+
+
+def test_commit_to_current_branch_refuses_protected_branch(tmp_path):
+    with patch(
+        "execution.patch_applier.subprocess.run",
+        return_value=_completed(0, stdout="main\n"),
+    ):
+        with pytest.raises(PatchApplyError):
+            commit_to_current_branch(tmp_path, "diff", "msg")
 
 
 def test_unique_branch_name_appends_suffix_on_collision(tmp_path):
