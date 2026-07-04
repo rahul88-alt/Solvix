@@ -3,4 +3,8 @@ tree-sitter-python
 tree-sitter-javascript
 sentence-transformers
 chromadb
+requests
 pytest
+ruff
+PyYAML
+click

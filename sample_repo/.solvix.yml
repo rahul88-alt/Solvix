@@ -1,0 +1,11 @@
+language: python
+test_command: pytest -q
+lint_command: ruff check .
+paths:
+  deny:
+    - "calculator.py"
+  sensitive:
+    - "auth/**"
+    - "billing/**"
+retries:
+  max_attempts: 3

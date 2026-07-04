@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solvix"
+version = "0.1.0"
+description = "An autonomous coding agent that plans, edits, and verifies changes to a local repo."
+requires-python = ">=3.11"
+dependencies = [
+    "click",
+    "requests",
+    "PyYAML",
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "sentence-transformers",
+    "chromadb",
+]
+
+[project.scripts]
+solvix = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli", "config"]
+
+[tool.setuptools.packages.find]
+include = ["context*", "execution*", "indexer*", "reasoning*"]

@@ -21,10 +21,10 @@ def test_index_repo_wires_chunking_symbols_and_vector_store(tmp_path):
 
     result = index_repo(repo_copy, embedder=FakeEmbedder())
 
-    assert result.num_files_indexed == 2
-    assert result.num_chunks == 8
+    assert result.num_files_indexed == 4
+    assert result.num_chunks == 15
     assert result.symbol_index.lookup("Calculator.add")
-    assert result.vector_store.count() == 8
+    assert result.vector_store.count() == 15
 
 
 def test_index_repo_raises_for_missing_path():

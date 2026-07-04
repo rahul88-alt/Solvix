@@ -6,3 +6,6 @@ def truncate(text, max_len=80):
     if len(text) <= max_len:
         return text
     return text[:max_len].rstrip() + "..."
+
+def reverse(text):
+    return text[::-1]

@@ -2,7 +2,7 @@
 ### An AI agent that understands a codebase, reasons about requirements, and makes code changes autonomously
 
 **Version:** 0.1 (Draft)
-**Owner:** Rahul Kumar
+**Owner:** [Your name]
 **Status:** Discovery / Pre-build
 
 ---
@@ -91,7 +91,7 @@ Five stages, looping between reasoning and execution until verification passes o
 | Layer | Choice | Why |
 |---|---|---|
 | Agent runtime | Python 3.11+ | Best ecosystem for LLM tooling, embeddings, subprocess/sandbox control |
-| LLM | Claude API (e.g. `claude-sonnet-4-6`) via Anthropic SDK | Strong tool-use and code reasoning; swappable behind an interface |
+| LLM | Local, via Ollama (Qwen2.5-Coder 14B default; Qwen3.6 27B optional for harder tasks) | No external API key/cost; runs fully offline; swappable behind an interface. Trade-off: noticeably weaker multi-step reasoning than a hosted frontier model — expect more retries/correction on complex tasks |
 | Embeddings | Any embedding API (Voyage, OpenAI, or local `sentence-transformers` for offline mode) | Needed for semantic repo search |
 | Vector store | Local — Chroma or a flat FAISS index | No need for a hosted DB at MVP scale (single repo, thousands of files at most) |
 | Symbol search | `ripgrep` + language-aware parsing via `tree-sitter` | Fast exact/structural search to complement embeddings |
@@ -119,7 +119,7 @@ solvix/
 ├── reasoning/
 │   ├── planner.py             # turns task + context into a step plan
 │   ├── editor.py               # turns a plan step into a concrete diff proposal
-│   └── llm_client.py           # thin wrapper around the Claude API (swappable)
+│   └── llm_client.py           # thin wrapper around the local Ollama API (OpenAI-compatible, swappable)
 ├── execution/
 │   ├── sandbox.py              # spins up/tears down the Docker sandbox
 │   ├── patch_applier.py        # applies a diff via git apply, handles conflicts
@@ -199,7 +199,7 @@ sandbox:
 - **Reversibility:** every change is a reviewable diff/PR — nothing is applied directly to a protected branch.
 - **Transparency:** the agent's reasoning and the exact commands it ran must be inspectable, not just the final diff.
 - **Bounded retries:** a hard cap on retry loops (e.g. 3–5 attempts) to avoid runaway cost/time.
-- **Cost visibility:** token/API cost per task should be tracked and surfaced.
+- **Cost visibility:** with a local model there's no per-token billing, but task duration and retry count should still be tracked and surfaced — cost now shows up as time/compute, not dollars, and a stuck retry loop can still waste real time on a laptop.
 - **Isolation:** code execution happens in a sandboxed environment, not on the host machine directly.
 
 ---

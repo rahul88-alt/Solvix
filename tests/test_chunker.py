@@ -63,5 +63,9 @@ def test_chunk_file_returns_empty_for_unsupported_extension(tmp_path):
 def test_chunk_repo_chunk_count_matches_known_symbols():
     chunks = chunk_repo(SAMPLE_REPO)
     # calculator.py: add, subtract, Calculator, __init__, add(method), subtract(method) = 6
-    # utils/strings.py: slugify, truncate = 2
-    assert len(chunks) == 8
+    # utils/strings.py: slugify, truncate, reverse = 3
+    # report.py: format_summary = 1
+    # tests/test_calculator.py: test_add, test_subtract,
+    #   test_subtract_negative_result, test_calculator_add_tracks_running_total,
+    #   test_calculator_subtract_tracks_running_total = 5
+    assert len(chunks) == 15
