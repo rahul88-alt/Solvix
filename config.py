@@ -57,6 +57,13 @@ _DEFAULT_MAX_TASK_ATTEMPTS = 10
 _DEFAULT_SANDBOX_BASE_IMAGE = "auto"
 _DEFAULT_SANDBOX_NETWORK = "install-only"
 
+# qwen2.5-coder:14b's context window is 32768 tokens; this budget covers only
+# the assembled retrieval context (chunks/symbol matches/related files) sent
+# to reasoning.task_input.build_task_context, leaving headroom outside it for
+# the system prompt, task description, and the model's own response
+# (reasoning.llm_client's max_tokens=4096).
+_DEFAULT_CONTEXT_TOKEN_BUDGET = 10000
+
 # Regex patterns (matched case-insensitively against diff text and shell
 # commands) flagging operations destructive enough to require explicit human
 # confirmation before proceeding (Master Document 7.3/7.6, Epic E2). Like
@@ -119,6 +126,7 @@ class SolvixConfig:
     max_task_attempts: int = _DEFAULT_MAX_TASK_ATTEMPTS
     sandbox_base_image: str = _DEFAULT_SANDBOX_BASE_IMAGE
     sandbox_network: str = _DEFAULT_SANDBOX_NETWORK
+    context_token_budget: int = _DEFAULT_CONTEXT_TOKEN_BUDGET
 
     def __post_init__(self) -> None:
         """sensitive_paths and dangerous_ops are always additive to their
@@ -169,4 +177,5 @@ def load_config(repo_path: str | Path) -> SolvixConfig:
         max_task_attempts=int(retries.get("max_task_attempts", _DEFAULT_MAX_TASK_ATTEMPTS)),
         sandbox_base_image=sandbox.get("base_image", _DEFAULT_SANDBOX_BASE_IMAGE),
         sandbox_network=sandbox.get("network", _DEFAULT_SANDBOX_NETWORK),
+        context_token_budget=int(raw.get("context_token_budget", _DEFAULT_CONTEXT_TOKEN_BUDGET)),
     )

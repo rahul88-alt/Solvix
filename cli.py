@@ -272,7 +272,9 @@ def _execute_pipeline(
     embedder = get_default_embedder()
     click.secho(f"Finding relevant files for: {task}...", fg="cyan")
     try:
-        task_context = build_task_context(task, index_result, embedder)
+        task_context = build_task_context(
+            task, index_result, embedder, token_budget=config.context_token_budget
+        )
     except InvalidTaskInputError as error:
         raise click.ClickException(str(error))
 

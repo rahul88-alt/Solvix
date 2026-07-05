@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from context.assembler import RetrievalResult, retrieve_relevant_files
+from context.assembler import DEFAULT_TOKEN_BUDGET, RetrievalResult, retrieve_relevant_files
 from indexer.embedder import Embedder
 from indexer.pipeline import IndexResult
 
@@ -50,11 +50,12 @@ def build_task_context(
     index_result: IndexResult,
     embedder: Embedder,
     top_n: int = 3,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> TaskContext:
     """Validate/normalize a raw task string and retrieve its relevant context.
 
     Raises InvalidTaskInputError if the raw text fails validation.
     """
     task = _normalize(raw_task)
-    retrieval = retrieve_relevant_files(task, index_result, embedder, top_n=top_n)
+    retrieval = retrieve_relevant_files(task, index_result, embedder, top_n=top_n, token_budget=token_budget)
     return TaskContext(task=task, retrieval=retrieval)

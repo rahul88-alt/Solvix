@@ -48,6 +48,15 @@ def test_load_config_returns_defaults_when_no_file_present(tmp_path):
     assert config.sensitive_paths == ("auth/", "billing/")
     assert config.max_retries == 3
     assert config.test_command == "pytest -q"
+    assert config.context_token_budget == 10000
+
+
+def test_load_config_parses_context_token_budget(tmp_path):
+    _write_config(tmp_path, "context_token_budget: 5000\n")
+
+    config = load_config(tmp_path)
+
+    assert config.context_token_budget == 5000
 
 
 def test_load_config_applies_defaults_for_missing_sections(tmp_path):
