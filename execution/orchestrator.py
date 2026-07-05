@@ -465,6 +465,16 @@ def execute_step_with_verification(
     caller can still tell "died on a malformed diff" apart from "died on a
     failing test" for the attempt that actually ended the loop).
 
+    run_tests_on_diff can raise this same DiffGenerationError too (SLX-C9):
+    execution.test_runner.apply_diff converts a `patch` failure during the
+    *real* apply into one, since a diff that passed propose_diff's own
+    dry-run validation can still fail to actually apply -- e.g. its target's
+    parent directory doesn't exist yet and is_new_file was (correctly or
+    incorrectly) False, a case the dry-run validation's always-already-
+    existing scratch tempdir can never reproduce. It's absorbed by this same
+    try/except, using the identical attempt-consuming/feedback/exhaustion
+    plumbing described above, rather than crashing the task raw.
+
     Once a diff is proposed, it (and the test command about to run) is
     scanned via check_dangerous_ops before run_tests_on_diff executes
     anything (Master Document Epic E2). With no confirm_dangerous_ops
@@ -598,7 +608,28 @@ def execute_step_with_verification(
             confirmed_reasons.extend(safety_check.reasons)
 
         _emit(on_progress, f"Step {step_index}: running tests (attempt {attempt})...")
-        test_result = run_tests_on_diff(repo_root, diff, test_command=effective_test_command)
+        try:
+            test_result = run_tests_on_diff(repo_root, diff, test_command=effective_test_command)
+        except DiffGenerationError as error:
+            # SLX-C9: a diff that passed propose_diff's own dry-run
+            # validation can still fail to apply for real here -- e.g. the
+            # target's parent directory didn't exist and is_new_file was
+            # (correctly or incorrectly) False, a case propose_diff's
+            # dry-run can never reproduce (see execution.test_runner.
+            # apply_diff's docstring). Absorbed via the same
+            # last_diff_generation_error/attempt_failures/previous_attempt
+            # plumbing a DiffGenerationError from propose_diff itself uses
+            # above, rather than letting it crash the whole task raw.
+            _emit(
+                on_progress,
+                f"Step {step_index}: diff failed to apply during test verification "
+                f"(attempt {attempt}): {error}",
+            )
+            last_diff_generation_error = str(error)
+            attempt_failures.append(f"attempt {attempt}: diff failed to apply during verification: {error}")
+            previous_attempt = PreviousAttempt(diff_text=diff.diff_text, failure_output=str(error))
+            test_result = None
+            continue
 
         if test_result.passed:
             _emit(on_progress, f"Step {step_index}: tests passed (attempt {attempt})")
@@ -627,8 +658,9 @@ def execute_step_with_verification(
         f"Step {step_index}: exhausted retries ({effective_max_retries} attempt(s)), needs human help",
     )
     exhausted_failure_reason = (
-        f"diff generation failed on the final attempt after exhausting the outer "
-        f"per-step retry budget ({effective_max_retries} attempt(s)): {last_diff_generation_error}"
+        f"the final attempt failed before producing a test result, after exhausting "
+        f"the outer per-step retry budget ({effective_max_retries} attempt(s)): "
+        f"{last_diff_generation_error}"
         if last_diff_generation_error is not None
         else None
     )

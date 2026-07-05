@@ -9,7 +9,7 @@ from execution.orchestrator import (
     execute_step_with_verification,
 )
 from execution.test_runner import TestResult
-from reasoning.editor import Diff
+from reasoning.editor import Diff, DiffGenerationError
 from reasoning.planner import PlanStep
 from reasoning.task_input import TaskContext
 
@@ -395,6 +395,51 @@ def test_execute_step_recovers_from_diff_generation_error_on_a_later_attempt(tmp
     # parse failure forward, the same way a test failure would be relayed.
     third_call_content = calls[2][-1]["content"]
     assert "could not be parsed" in third_call_content or "did not apply cleanly" in third_call_content
+
+
+def test_execute_step_returns_clean_result_when_diff_apply_crashes_during_verification(tmp_path):
+    """SLX-C9: execution.test_runner.apply_diff now converts a `patch`
+    failure during the real (non-dry-run) apply -- e.g. the exact
+    count_vowels smoke-test failure, a diff for utils/strings.py whose
+    parent directory doesn't exist and whose is_new_file was False -- into
+    DiffGenerationError instead of letting a raw subprocess.
+    CalledProcessError escape (see tests/test_runner.py for that
+    conversion, exercised directly against the real `patch` subprocess).
+    This confirms execute_step_with_verification's outer loop absorbs a
+    DiffGenerationError raised from run_tests_on_diff via the exact same
+    plumbing a DiffGenerationError from propose_diff itself already uses,
+    ending in a clean needs_human_help StepResult rather than a raised
+    exception reaching the caller.
+    """
+    _write_repo(tmp_path)
+
+    def fake_complete(system, messages):
+        return _CLAMPED_DIFF
+
+    import execution.orchestrator as orchestrator_module
+
+    real_run_tests = orchestrator_module.run_tests_on_diff
+
+    def always_crashes(repo_root, diff, test_command):
+        raise DiffGenerationError(
+            f"diff failed to apply to {diff.target_file}: "
+            "Command ['patch', ...] returned non-zero exit status 2."
+        )
+
+    orchestrator_module.run_tests_on_diff = always_crashes
+    try:
+        result = execute_step_with_verification(
+            _step(), _ORIGINAL_CONTENT, _task_context(), complete_fn=fake_complete, repo_root=tmp_path
+        )
+    finally:
+        orchestrator_module.run_tests_on_diff = real_run_tests
+
+    assert result.success is False
+    assert result.needs_human_help is True
+    assert result.test_result is None
+    assert result.failure_reason is not None
+    assert "exhausting the outer per-step retry budget" in result.failure_reason
+    assert len(result.attempt_failures) == 3
 
 
 def test_execute_step_requires_confirmation_and_skips_tests_for_dangerous_diff(tmp_path):

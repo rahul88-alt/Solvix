@@ -26,7 +26,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from reasoning.editor import Diff
+from reasoning.editor import Diff, DiffGenerationError
 
 from execution.sandbox import Sandbox
 
@@ -63,10 +63,28 @@ def apply_diff(root: Path, diff: Diff) -> None:
     persists a step's diff across the rest of that task's steps (Epic C2)
     -- the same function either way, since applying a diff has no notion of
     "scratch" or "persistent", only a target directory.
+
+    The target's parent directory is always created up front (SLX-C9),
+    regardless of diff.is_new_file: that flag is only as reliable as
+    reasoning.editor's "/dev/null" heuristic for detecting a new-file diff,
+    and a model that emits a plain-addition diff without that marker for a
+    file whose containing directory doesn't exist yet would otherwise make
+    `patch` fail outright, a failure reasoning.editor's own dry-run
+    validation can never catch (its scratch target always lives directly in
+    an already-existing tempdir, so there's never a missing directory to
+    trip over there). Creating the directory unconditionally costs nothing
+    when it already exists (exist_ok=True) and removes this blind spot
+    without having to make the is_new_file heuristic itself any more
+    reliable.
+
+    A `patch` failure here is raised as reasoning.editor.DiffGenerationError
+    (SLX-C9) -- the same exception execution.orchestrator's outer retry loop
+    already knows how to absorb into a clean StepResult -- rather than
+    letting the raw subprocess.CalledProcessError (from `check=True`) or an
+    OSError (e.g. the `patch` binary itself missing) escape uncaught.
     """
     target_path = root / diff.target_file
-    if diff.is_new_file:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
 
     diff_path = root / ".solvix_scratch.diff"
     diff_path.write_text(diff.diff_text)
@@ -78,6 +96,10 @@ def apply_diff(root: Path, diff: Diff) -> None:
             stdin=subprocess.DEVNULL,
             check=True,
         )
+    except (subprocess.CalledProcessError, OSError) as error:
+        raise DiffGenerationError(
+            f"diff failed to apply to {diff.target_file}: {error}"
+        ) from error
     finally:
         diff_path.unlink(missing_ok=True)
 
