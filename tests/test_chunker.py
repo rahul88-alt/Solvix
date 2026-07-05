@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from indexer.chunker import chunk_file, chunk_repo
 
 SAMPLE_REPO = Path(__file__).parent.parent / "sample_repo"
@@ -69,3 +71,35 @@ def test_chunk_repo_chunk_count_matches_known_symbols():
     #   test_subtract_negative_result, test_calculator_add_tracks_running_total,
     #   test_calculator_subtract_tracks_running_total = 5
     assert len(chunks) == 15
+
+
+def test_chunk_file_raises_unicode_decode_error_for_invalid_utf8(tmp_path):
+    """chunk_file itself still raises -- chunk_repo (below) is what's
+    responsible for catching this and skipping the file."""
+    bad = tmp_path / "bad.py"
+    bad.write_bytes(b"# -*- coding: big5 -*-\ndef f():\n    return '\xa4@'\n")
+    with pytest.raises(UnicodeDecodeError):
+        chunk_file(bad, tmp_path)
+
+
+def test_chunk_repo_skips_non_utf8_file_with_warning_and_still_chunks_the_rest(tmp_path):
+    (tmp_path / "good.py").write_text("def good_fn():\n    return 1\n")
+    (tmp_path / "bad.py").write_bytes(
+        b"# -*- coding: big5 -*-\ndef bad_fn():\n    return '\xa4@\xa8\xc7\xa4\xa4'\n"
+    )
+
+    with pytest.warns(UserWarning, match="bad.py"):
+        chunks = chunk_repo(tmp_path)
+
+    symbols = {c.symbol for c in chunks}
+    assert "good_fn" in symbols
+    assert "bad_fn" not in symbols
+
+
+def test_chunk_repo_with_only_a_bad_file_returns_empty_without_crashing(tmp_path):
+    (tmp_path / "bad.py").write_bytes(b"# -*- coding: big5 -*-\ndef f():\n    return '\xa4@'\n")
+
+    with pytest.warns(UserWarning):
+        chunks = chunk_repo(tmp_path)
+
+    assert chunks == []

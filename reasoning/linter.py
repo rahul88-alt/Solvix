@@ -42,6 +42,7 @@ def run_linter(file_path: str | Path) -> LintResult:
             ["ruff", "check", "--output-format=json", str(file_path)],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return LintResult(violations=(), ran=False)

@@ -1,0 +1,15 @@
+# Solvix's own config for when solvix verifies a change to this repo.
+#
+# test_command runs inside the sandbox container (execution/sandbox.py),
+# which -- correctly, by design -- has no Docker daemon of its own and no
+# nested-Docker access. tests/test_runner.py and tests/test_orchestrator.py
+# are integration tests that call real `docker`/`patch` subprocesses (most
+# orchestrator tests exercise execute_step_with_verification against a real,
+# unstubbed sandboxed test run); they're meaningful on a developer's host,
+# but can't pass inside the very sandbox they're testing. Everything else in
+# the suite (including anything that only needs the `patch` binary, now
+# installed in the sandbox image) still runs and still gates the change.
+#
+# This means solvix verifying its own repo has strictly less coverage than
+# a host-run `pytest -q` -- a known, accepted trade-off, not an oversight.
+test_command: "pytest -q --ignore=tests/test_runner.py --ignore=tests/test_orchestrator.py"

@@ -8,9 +8,23 @@ embedder (Voyage/OpenAI) later without touching the rest of the pipeline.
 
 from __future__ import annotations
 
+import os
 from typing import Protocol
 
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
+
+# Set before sentence_transformers/huggingface_hub/transformers are ever
+# imported (below), not just before the model-loading call itself: some of
+# their own progress-bar/logging defaults are read at import time, so
+# setting these any later could miss the window. show_progress_bar=False on
+# .encode() (below) only silences the *embedding* progress bar -- it does
+# nothing for SentenceTransformer(...)'s own model-loading step, which is
+# the "Loading weights: 0%|...|100%" tqdm bar these two variables suppress.
+# setdefault, not a plain assignment, so a caller who has deliberately set
+# either of these already (e.g. wants verbose loading for debugging) is
+# never overridden.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 
 class Embedder(Protocol):

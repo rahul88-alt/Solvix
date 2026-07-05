@@ -1,9 +1,17 @@
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import execution.sandbox as sandbox_module
-from execution.sandbox import DockerUnavailableError, Sandbox, SandboxResult, _CONTAINER_PREFIX, reap_orphans
+from execution.sandbox import (
+    DockerUnavailableError,
+    Sandbox,
+    SandboxResult,
+    _CONTAINER_PREFIX,
+    _DEFAULT_IMAGE,
+    reap_orphans,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -173,3 +181,76 @@ def test_sandbox_create_failure_does_not_leave_container_name_set(tmp_path):
         with pytest.raises(RuntimeError):
             with Sandbox(tmp_path):
                 pass
+
+
+def test_sandbox_installs_repo_requirements_before_running_tests(tmp_path):
+    """SLX-E5: a target repo with a requirements.txt should get those
+    packages installed into a derived sandbox image (built once, offline
+    test run after), instead of every test collection failing with
+    ModuleNotFoundError against the generic pytest/ruff-only default image.
+    """
+    (tmp_path / "requirements.txt").write_text("click\nrequests\n")
+
+    build_calls = []
+
+    def fake_subprocess_run(args, **kwargs):
+        if args[:2] == ["docker", "build"]:
+            build_calls.append(args)
+            build_dir = Path(args[-1])
+            dockerfile = (build_dir / "Dockerfile").read_text()
+            assert "pip install --no-cache-dir -r" in dockerfile
+            requirements = (build_dir / "requirements.txt").read_text()
+            assert "click" in requirements
+            assert "requests" in requirements
+        return _completed(0)
+
+    calls = []
+
+    def fake_docker(*args, **kwargs):
+        calls.append(args)
+        return _completed(0)
+
+    with patch(
+        "execution.sandbox._image_exists", side_effect=lambda image: image == _DEFAULT_IMAGE
+    ), patch("execution.sandbox._docker", side_effect=fake_docker), patch(
+        "execution.sandbox.subprocess.run", side_effect=fake_subprocess_run
+    ):
+        with Sandbox(tmp_path) as sandbox:
+            used_image = sandbox.image
+
+    assert len(build_calls) == 1
+    assert used_image != _DEFAULT_IMAGE
+    assert used_image.startswith(f"{_DEFAULT_IMAGE}-deps-")
+
+    create_call = next(c for c in calls if c[0] == "create")
+    assert used_image in create_call
+
+
+def test_sandbox_reuses_cached_dependency_image(tmp_path):
+    (tmp_path / "requirements.txt").write_text("click\n")
+
+    build_calls = []
+
+    def fake_subprocess_run(args, **kwargs):
+        if args[:2] == ["docker", "build"]:
+            build_calls.append(args)
+        return _completed(0)
+
+    with patch("execution.sandbox._image_exists", return_value=True), patch(
+        "execution.sandbox._docker", side_effect=lambda *a, **k: _completed(0)
+    ), patch("execution.sandbox.subprocess.run", side_effect=fake_subprocess_run):
+        with Sandbox(tmp_path) as sandbox:
+            used_image = sandbox.image
+
+    assert build_calls == []
+    assert used_image.startswith(f"{_DEFAULT_IMAGE}-deps-")
+
+
+def test_sandbox_uses_default_image_when_repo_has_no_dependency_file(tmp_path):
+    with patch("execution.sandbox._image_exists", return_value=True), patch(
+        "execution.sandbox._docker", side_effect=lambda *a, **k: _completed(0)
+    ):
+        with Sandbox(tmp_path) as sandbox:
+            used_image = sandbox.image
+
+    assert used_image == _DEFAULT_IMAGE
