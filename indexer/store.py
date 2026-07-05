@@ -48,6 +48,9 @@ class VectorStore:
             ],
         )
 
+    def delete_by_file_path(self, file_path: str) -> None:
+        self._collection.delete(where={"file_path": file_path})
+
     def query(self, query_embedding: list[float], top_k: int = 5) -> list[dict]:
         result = self._collection.query(
             query_embeddings=[query_embedding],
