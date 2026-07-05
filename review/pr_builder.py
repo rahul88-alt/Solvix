@@ -53,7 +53,7 @@ class PullRequestResult:
 
 
 def _run(args: list[str], cwd: str | Path) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True)
+    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
 
 def push_branch(repo_root: str | Path, branch_name: str) -> None:

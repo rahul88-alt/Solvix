@@ -7,6 +7,7 @@ from execution.orchestrator import DangerousOpsCheck, StepResult, TaskResult
 from execution.test_runner import TestResult
 from indexer.pipeline import IndexResult
 from reasoning.editor import Diff
+from reasoning.llm_client import OllamaUnavailableError
 from reasoning.planner import Plan, PlanStep
 from reasoning.task_input import TaskContext
 from review.pr_builder import PullRequestResult
@@ -58,6 +59,7 @@ def _patch_common(
 ):
     monkeypatch.setattr(cli, "load_config", lambda repo_root: SolvixConfig())
     monkeypatch.setattr(cli, "ensure_docker_available", lambda: None)
+    monkeypatch.setattr(cli, "ensure_ollama_available", lambda: None)
     monkeypatch.setattr(cli, "reap_orphans", lambda: [])
     monkeypatch.setattr(
         cli,
@@ -418,6 +420,46 @@ def test_revise_fetch_feedback_error_reported_cleanly(monkeypatch, tmp_path):
 
     assert result.exit_code != 0
     assert "no human feedback comment" in result.output
+
+
+def test_run_ollama_unavailable_reported_cleanly_not_as_traceback(monkeypatch, tmp_path):
+    """SLX-F4: Ollama not running must fail fast with a clean message and a
+    non-zero exit code, mirroring how a Docker-unavailable preflight failure
+    is already reported -- never a raw ConnectionError traceback.
+    """
+    _patch_common(monkeypatch)
+
+    def raise_unavailable():
+        raise OllamaUnavailableError(
+            "Ollama is not available at http://localhost:11434. Start it with: ollama serve"
+        )
+
+    monkeypatch.setattr(cli, "ensure_ollama_available", raise_unavailable)
+
+    result = CliRunner().invoke(cli.cli, ["run", "add a palindrome check", "--repo", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert result.exc_info[0] is not OllamaUnavailableError
+    assert "Ollama is not available" in result.output
+    assert "ollama serve" in result.output
+
+
+def test_revise_ollama_unavailable_reported_cleanly_not_as_traceback(monkeypatch, tmp_path):
+    _patch_revise_common(monkeypatch)
+
+    def raise_unavailable():
+        raise OllamaUnavailableError(
+            "Ollama is not available at http://localhost:11434. Start it with: ollama serve"
+        )
+
+    monkeypatch.setattr(cli, "ensure_ollama_available", raise_unavailable)
+
+    result = CliRunner().invoke(cli.cli, ["revise", "42", "--repo", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert result.exc_info[0] is not OllamaUnavailableError
+    assert "Ollama is not available" in result.output
+    assert "ollama serve" in result.output
 
 
 def test_run_unhandled_pipeline_exception_reported_cleanly_not_as_traceback(monkeypatch, tmp_path):

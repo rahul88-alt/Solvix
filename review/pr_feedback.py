@@ -47,7 +47,7 @@ class PRFeedback:
 
 
 def _run(args: list[str], cwd: str | Path) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True)
+    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
 
 def fetch_pr_feedback(repo_root: str | Path, pr_number: int) -> PRFeedback:

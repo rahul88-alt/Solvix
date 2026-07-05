@@ -7,6 +7,7 @@ a node-type mapping — the walker itself is language-agnostic.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,8 +122,22 @@ def iter_source_files(repo_root: Path):
 
 
 def chunk_repo(repo_root: Path) -> list[Chunk]:
-    """Chunk every supported source file under repo_root."""
+    """Chunk every supported source file under repo_root.
+
+    A file whose bytes aren't valid UTF-8 (Epic A6) is skipped entirely with
+    a warning rather than crashing chunking for every other file: tree-sitter
+    parses raw bytes regardless of encoding, so parsing itself never fails,
+    but _node_name/_chunk_from_node's source[...].decode("utf-8") does, as
+    soon as a chunk's byte range covers non-UTF-8 content. Skipping the whole
+    file (rather than guessing an encoding to decode it with, or decoding
+    with errors="replace" and silently corrupting the chunk's text) matches
+    "don't guess-decode source code you can't read correctly".
+    """
     chunks: list[Chunk] = []
     for path in iter_source_files(repo_root):
-        chunks.extend(chunk_file(path, repo_root))
+        try:
+            chunks.extend(chunk_file(path, repo_root))
+        except UnicodeDecodeError as error:
+            rel = path.relative_to(repo_root)
+            warnings.warn(f"skipping {rel}: not valid UTF-8 ({error})", stacklevel=2)
     return chunks

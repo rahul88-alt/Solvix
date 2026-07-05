@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from reasoning.linter import LintViolation, new_violations, run_linter
-from reasoning.llm_client import complete
+from reasoning.llm_client import OllamaUnavailableError, complete
 from reasoning.planner import PlanStep
 from reasoning.task_input import TaskContext
 
@@ -58,6 +58,23 @@ _LINT_CORRECTION_TEMPLATE = (
 
 class DiffGenerationError(Exception):
     """Raised when the model's diff output can't be parsed or doesn't apply."""
+
+
+def _complete_or_raise(
+    complete_fn: Callable[[str, list[dict]], str], system: str, messages: list[dict]
+) -> str:
+    """Call complete_fn, converting an OllamaUnavailableError (SLX-F4: Ollama
+    unreachable mid-run, e.g. it was stopped between propose_diff attempts)
+    into a DiffGenerationError -- the existing failure mode
+    execute_step_with_verification's outer retry loop already knows how to
+    absorb (fed back as this attempt's failure, eventually a needs_human_help
+    StepResult once retries are exhausted), rather than a raw exception
+    escaping propose_diff entirely.
+    """
+    try:
+        return complete_fn(system, messages)
+    except OllamaUnavailableError as error:
+        raise DiffGenerationError(str(error)) from error
 
 
 @dataclass(frozen=True)
@@ -310,7 +327,7 @@ def propose_diff(
             "content": _build_user_message(step, file_content, context, previous_attempt),
         }
     ]
-    raw_response = complete_fn(_SYSTEM_PROMPT, messages)
+    raw_response = _complete_or_raise(complete_fn, _SYSTEM_PROMPT, messages)
 
     try:
         diff_text = _extract_diff_text(raw_response)
@@ -323,7 +340,7 @@ def propose_diff(
             {"role": "assistant", "content": raw_response},
             {"role": "user", "content": correction},
         ]
-        raw_response = complete_fn(_SYSTEM_PROMPT, messages)
+        raw_response = _complete_or_raise(complete_fn, _SYSTEM_PROMPT, messages)
         diff_text = _extract_diff_text(raw_response)
         is_new_file = _is_new_file_diff(diff_text)
         _validate_applies_cleanly(diff_text, file_content, is_new_file)
@@ -338,7 +355,7 @@ def propose_diff(
             {"role": "assistant", "content": raw_response},
             {"role": "user", "content": lint_correction},
         ]
-        raw_response = complete_fn(_SYSTEM_PROMPT, messages)
+        raw_response = _complete_or_raise(complete_fn, _SYSTEM_PROMPT, messages)
         diff_text = _extract_diff_text(raw_response)
         is_new_file = _is_new_file_diff(diff_text)
         _validate_applies_cleanly(diff_text, file_content, is_new_file)

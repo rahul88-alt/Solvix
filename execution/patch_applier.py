@@ -28,7 +28,10 @@ class PatchApplyError(RuntimeError):
 
 def _git(repo_root: str | Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["git", "-C", str(repo_root), *args], capture_output=True, text=True
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
     )
     if check and result.returncode != 0:
         raise PatchApplyError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -91,6 +94,7 @@ def _apply_diff_and_commit(repo_root: str | Path, diff: str, commit_message: str
             cwd=str(repo_root),
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
         if apply_result.returncode != 0:
             # git apply requires exact hunk context and rejects the whole
@@ -111,6 +115,7 @@ def _apply_diff_and_commit(repo_root: str | Path, diff: str, commit_message: str
                 ],
                 capture_output=True,
                 text=True,
+                stdin=subprocess.DEVNULL,
             )
             if patch_result.returncode != 0:
                 raise PatchApplyError(

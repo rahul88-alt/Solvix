@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import ast
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from indexer.chunker import iter_source_files
 from indexer.embedder import Embedder
 from indexer.pipeline import IndexResult
 
@@ -70,15 +72,34 @@ def build_import_graph(repo_root: Path) -> dict[str, set[str]]:
     statements. Only intra-repo, absolute (non-relative) imports are
     resolved; anything else (stdlib, third-party, relative imports) is
     ignored since it has no corresponding file in the repo.
+
+    Uses indexer.chunker.iter_source_files rather than a raw `rglob("*.py")`
+    (Epic A6) so this walks the same file set chunk_repo already does --
+    skipping `.venv`/`node_modules`/`.git`/etc -- instead of also parsing
+    every dependency vendored under the repo root. That exclusion is the
+    actual fix for the crash this was built to prevent: a real run against
+    Solvix's own repo hit a `.venv`-vendored joblib test fixture deliberately
+    encoded as Big5 (a `# -*- coding: big5 -*-` file testing joblib's own
+    handling of non-UTF-8 source), which should never have been scanned as
+    part of *this* repo's import graph in the first place.
+
+    A file that still can't be decoded as UTF-8 even after that exclusion
+    (a genuinely non-UTF-8 file inside the repo proper) is skipped with a
+    warning rather than crashing graph-building for every other file.
     """
-    py_files = sorted(p for p in repo_root.rglob("*.py") if p.is_file())
+    py_files = list(iter_source_files(repo_root))
     module_to_path = {_module_name(str(p.relative_to(repo_root))): str(p.relative_to(repo_root)) for p in py_files}
 
     graph: dict[str, set[str]] = {str(p.relative_to(repo_root)): set() for p in py_files}
     for p in py_files:
         rel = str(p.relative_to(repo_root))
         try:
-            tree = ast.parse(p.read_text(), filename=rel)
+            source_text = p.read_text()
+        except UnicodeDecodeError as error:
+            warnings.warn(f"skipping {rel} in import-graph building: not valid UTF-8 ({error})", stacklevel=2)
+            continue
+        try:
+            tree = ast.parse(source_text, filename=rel)
         except SyntaxError:
             continue
         for node in ast.walk(tree):

@@ -2,6 +2,7 @@ import pytest
 
 from context.assembler import FileScore, RetrievalResult
 from reasoning.editor import Diff, DiffGenerationError, propose_diff
+from reasoning.llm_client import OllamaUnavailableError
 from reasoning.planner import PlanStep
 from reasoning.task_input import TaskContext
 
@@ -108,6 +109,20 @@ def test_propose_diff_retries_once_when_diff_does_not_apply_cleanly():
     assert len(calls) == 2
     assert "did not apply cleanly" in calls[1][-1]["content"]
     assert diff.diff_text.strip() == _CLEAN_DIFF.strip()
+
+
+def test_propose_diff_converts_ollama_unavailable_into_diff_generation_error():
+    """SLX-F4: a mid-run Ollama outage (e.g. it was stopped between attempts)
+    must surface as the existing DiffGenerationError failure mode -- which
+    execute_step_with_verification's outer retry loop already knows how to
+    absorb into a needs_human_help StepResult -- not a raw exception.
+    """
+
+    def fake_complete(system, messages):
+        raise OllamaUnavailableError("lost connection to Ollama at http://localhost:11434/v1")
+
+    with pytest.raises(DiffGenerationError):
+        propose_diff(_step(), _ORIGINAL_CONTENT, _task_context(), complete_fn=fake_complete)
 
 
 def test_propose_diff_raises_after_retry_still_malformed():

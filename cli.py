@@ -57,6 +57,7 @@ from memory.task_state import (
     OUTCOME_SUCCESS,
     TaskStateStore,
 )
+from reasoning.llm_client import OllamaUnavailableError, ensure_ollama_available
 from reasoning.planner import Clarification, Plan, check_ambiguity, generate_plan
 from reasoning.task_input import InvalidTaskInputError, TaskContext, build_task_context
 from review.pr_builder import PRBuildError, PullRequestResult, build_pr, push_branch
@@ -190,6 +191,10 @@ def run(task: str, repo_path: str, no_clarify: bool) -> None:
     try:
         ensure_docker_available()
     except DockerUnavailableError as error:
+        raise click.ClickException(str(error))
+    try:
+        ensure_ollama_available()
+    except OllamaUnavailableError as error:
         raise click.ClickException(str(error))
     reap_orphans()
 
@@ -366,6 +371,10 @@ def revise(pr_number: int, repo_path: str, no_clarify: bool) -> None:
     try:
         ensure_docker_available()
     except DockerUnavailableError as error:
+        raise click.ClickException(str(error))
+    try:
+        ensure_ollama_available()
+    except OllamaUnavailableError as error:
         raise click.ClickException(str(error))
     reap_orphans()
 

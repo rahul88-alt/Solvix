@@ -22,11 +22,22 @@ containers left over from such a prior process; `Sandbox.__enter__` calls
 it once per process (not on every sandbox creation) as a stopgap until
 there's a dedicated CLI entry point that can call it explicitly at true
 process startup instead.
+
+Every `docker` invocation here passes `stdin=subprocess.DEVNULL`: none of
+them ever pass `-i`/`-t`, so the docker CLI client has no legitimate reason
+to read from the caller's real terminal -- left unset, it silently inherits
+that tty's stdin by default (Python subprocess's own default), which was
+flagged during a real terminal-corruption investigation as unnecessary
+exposure to the user's actual input stream, even though it wasn't proven to
+be the specific mechanism behind that incident.
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +66,13 @@ class SandboxResult:
 
 
 def _docker(*args: str, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(["docker", *args], capture_output=True, text=True, **kwargs)
+    # stdin=DEVNULL: every docker call here is non-interactive (no -i/-t is
+    # ever passed to `create`/`exec`), so the docker CLI client itself never
+    # needs to read from the caller's terminal -- without this, it silently
+    # inherits the real tty's stdin by default, purely unused but still a
+    # gap worth closing (Epic E-series subprocess hygiene; see sandbox.py's
+    # docstring investigation notes).
+    return subprocess.run(["docker", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL, **kwargs)
 
 
 def ensure_docker_available() -> None:
@@ -65,7 +82,7 @@ def ensure_docker_available() -> None:
     """
     try:
         result = subprocess.run(
-            ["docker", "info"], capture_output=True, text=True, timeout=10
+            ["docker", "info"], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL
         )
     except FileNotFoundError as error:
         raise DockerUnavailableError(
@@ -113,6 +130,88 @@ def _ensure_default_image_built() -> None:
         raise RuntimeError(f"Failed to build sandbox image {_DEFAULT_IMAGE}: {result.stderr}")
 
 
+def _pyproject_dependencies(text: str) -> list[str]:
+    """Best-effort extraction of the PEP 621 `[project] dependencies = [...]`
+    list from pyproject.toml, without pulling in a TOML parser dependency
+    (the host running Solvix may predate stdlib tomllib). Only the plain
+    `dependencies = [...]` array is supported; poetry-style dependency
+    tables are not.
+    """
+    match = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.DOTALL)
+    if not match:
+        return []
+    return [a or b for a, b in re.findall(r"\"([^\"]+)\"|'([^']+)'", match.group(1))]
+
+
+def _repo_requirements(repo_path: Path) -> tuple[str, str] | None:
+    """Return (cache_key, requirements.txt-format text) for the target
+    repo's own declared dependencies, preferring requirements.txt over
+    pyproject.toml, or None if the repo declares neither.
+    """
+    requirements = repo_path / "requirements.txt"
+    if requirements.exists():
+        text = requirements.read_text()
+        return text, text
+
+    pyproject = repo_path / "pyproject.toml"
+    if pyproject.exists():
+        text = pyproject.read_text()
+        deps = _pyproject_dependencies(text)
+        if deps:
+            return text, "\n".join(deps) + "\n"
+
+    return None
+
+
+def _ensure_repo_image_built(repo_path: Path) -> str:
+    """Build (or reuse a cached) image with the target repo's own declared
+    dependencies installed on top of the default sandbox image (SLX-E5).
+
+    Without this, a repo whose test suite imports its own third-party
+    dependencies (e.g. Solvix's own suite needing tree_sitter_python, click,
+    yaml, requests) fails every collection inside the sandbox regardless of
+    whether the generated diff is correct, since the generic default image
+    only has pytest/ruff.
+
+    Installing packages needs network access, so -- like
+    _ensure_default_image_built -- this build happens once at image-prep
+    time and is cached by a tag derived from the dependency declaration's
+    content; the actual test run inside the resulting container still
+    happens fully offline (--network=none). Repos with no requirements.txt
+    or pyproject.toml dependencies just get the plain default image.
+    """
+    _ensure_default_image_built()
+
+    dependencies = _repo_requirements(repo_path)
+    if dependencies is None:
+        return _DEFAULT_IMAGE
+    cache_key, requirements_text = dependencies
+
+    digest = hashlib.sha256(cache_key.encode()).hexdigest()[:16]
+    tag = f"{_DEFAULT_IMAGE}-deps-{digest}"
+    if _image_exists(tag):
+        return tag
+
+    with tempfile.TemporaryDirectory() as build_dir:
+        build_path = Path(build_dir)
+        (build_path / "requirements.txt").write_text(requirements_text)
+        (build_path / "Dockerfile").write_text(
+            f"FROM {_DEFAULT_IMAGE}\n"
+            "COPY requirements.txt /tmp/requirements.txt\n"
+            "RUN pip install --no-cache-dir -r /tmp/requirements.txt\n"
+        )
+        result = subprocess.run(
+            ["docker", "build", "-t", tag, str(build_path)],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to build dependency image {tag}: {result.stderr}")
+    return tag
+
+
 class Sandbox:
     """Context manager providing one disposable, network-isolated Docker
     container for a single repo snapshot.
@@ -144,7 +243,7 @@ class Sandbox:
             _orphans_reaped_this_process = True
 
         if self.image == _DEFAULT_IMAGE:
-            _ensure_default_image_built()
+            self.image = _ensure_repo_image_built(Path(self.repo_path))
 
         self._container_name = f"{_CONTAINER_PREFIX}{uuid.uuid4().hex[:12]}"
         create_result = _docker(

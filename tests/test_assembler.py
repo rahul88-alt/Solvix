@@ -85,3 +85,37 @@ def test_build_import_graph_resolves_intra_repo_imports():
     graph = build_import_graph(SAMPLE_REPO)
     assert graph["report.py"] == {"calculator.py", "utils/strings.py"}
     assert graph["calculator.py"] == set()
+
+
+def test_build_import_graph_excludes_vendored_dependencies(tmp_path):
+    """Epic A6: build_import_graph must never walk into `.venv`/etc -- a
+    real run against Solvix's own repo previously crashed here because a
+    `.venv`-vendored dependency's test fixture wasn't valid UTF-8, and more
+    generally a repo's own import graph has no business parsing third-party
+    dependency source at all.
+    """
+    (tmp_path / "main.py").write_text("import helper\n")
+    (tmp_path / "helper.py").write_text("x = 1\n")
+    venv_pkg = tmp_path / ".venv" / "lib" / "somepkg"
+    venv_pkg.mkdir(parents=True)
+    (venv_pkg / "__init__.py").write_text("import os\n")
+
+    graph = build_import_graph(tmp_path)
+
+    assert set(graph.keys()) == {"main.py", "helper.py"}
+    assert graph["main.py"] == {"helper.py"}
+
+
+def test_build_import_graph_skips_non_utf8_file_with_warning(tmp_path):
+    (tmp_path / "main.py").write_text("import helper\n")
+    (tmp_path / "helper.py").write_text("x = 1\n")
+    (tmp_path / "bad.py").write_bytes(b"# -*- coding: big5 -*-\nx = '\xa4@'\n")
+
+    with pytest.warns(UserWarning, match="bad.py"):
+        graph = build_import_graph(tmp_path)
+
+    # the bad file is still present as a graph node (it exists in the repo),
+    # just never parsed for its own imports -- and every other file is
+    # unaffected
+    assert graph["bad.py"] == set()
+    assert graph["main.py"] == {"helper.py"}
