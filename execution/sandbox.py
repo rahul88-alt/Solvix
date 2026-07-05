@@ -10,10 +10,12 @@ Containers run with `--network=none`: nothing in the current pipeline
 needs network access while executing test/generated code (embeddings and
 LLM calls happen outside the sandbox, in the host process). The one
 exception is image preparation: the default sandbox image is a minimal
-derivative of `python:3.11-slim` with `pytest`/`ruff` pre-installed, built
-once via `docker build` (which does need network) and cached by tag --
-that is a local image-prep step, not code execution, and every actual
-test run still happens fully offline.
+derivative of `python:3.11-slim` with `pytest`/`ruff`/`patch` pre-installed
+(`patch` via apt, since it's a system binary rather than a pip package --
+needed for any target repo whose own test suite shells out to it, Solvix's
+own included), built once via `docker build` (which does need network) and
+cached by tag -- that is a local image-prep step, not code execution, and
+every actual test run still happens fully offline.
 
 `__exit__`-based cleanup only runs if the Python process is alive to run
 it -- a crash, `kill -9`, or a laptop sleep interrupting a run can leave a
@@ -50,6 +52,8 @@ _orphans_reaped_this_process = False
 
 _DOCKERFILE = """\
 FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends patch \\
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir pytest ruff
 """
 
